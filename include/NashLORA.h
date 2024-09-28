@@ -15,7 +15,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-void initSPI();
+void initSPI(gpio_num_t miso, gpio_num_t mosi, gpio_num_t sclk);
 
 class NashLORA
 {
@@ -32,10 +32,14 @@ class NashLORA
     void receivePacket(uint8_t* buf, uint8_t* len); // receive packet
     void clearReceiveFlags(); // clear irq flags for packet received, can be used to ignore packet with crc error
     int getPacketRSSI();
+    int getPacketSNR();
     void setPower(uint8_t power); // set transmit power in dBm
     void setGain(uint8_t Gval); // set gain, 1 is max, 6 is min
     void enableAGC(bool en); // enable or disable auto gain control
     void setSyncWord(uint8_t syncWord); // set sync word - should not use 0x34
+
+    int64_t getFreqErr();
+    void correctFreqOffset();
 
     void setCodingRate(uint8_t codingRate); // set coding rate, valid values are 5 -> 8
     void setSpreadingFactor(uint8_t spreadingFactor); // set spreading factor, valid values are 7 -> 12

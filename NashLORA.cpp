@@ -47,15 +47,6 @@
 #define REG_VERSION                 0x42
 // there are some other registers, seems they are not needed
 
-// add more defines here for needed things possibly, like writing certain registers in repeated ways
-
-// pins for LORA
-#define PIN_MISO    GPIO_NUM_13
-#define PIN_MOSI    GPIO_NUM_11
-#define PIN_SCK     GPIO_NUM_12
-//#define PIN_CS      GPIO_NUM_10
-//#define PIN_RST     GPIO_NUM_8
-
 // register settings for different modes - these are set to always keep the device in LoRa long range mode
 #define MODE_SLEEP 0x80
 #define MODE_STANDBY 0x81
@@ -75,13 +66,13 @@ static const char *TAG = "LORA_DEBUG";
 // bandwidths in kHz corresponding to int value needed to set them in register (0 -> 9)
 static const double bandwidths[10] = {7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250, 500};
 
-// Initialize the ESP32 SPI bus, this must be called before initializing loras
-void initSPI()
+// Initialize the ESP32 SPI bus, this must be called before initializing loras -> i dont know where to put this so here it will stay
+void initSPI(gpio_num_t miso, gpio_num_t mosi, gpio_num_t sclk)
 {
     spi_bus_config_t busConfig = {
-        .mosi_io_num = PIN_MOSI,
-        .miso_io_num = PIN_MISO,
-        .sclk_io_num = PIN_SCK,
+        .mosi_io_num = mosi,
+        .miso_io_num = miso,
+        .sclk_io_num = sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 0
@@ -272,6 +263,7 @@ void NashLORA::send(uint8_t* buf, uint8_t len)
     {
         vTaskDelay(10/portTICK_PERIOD_MS);
     }
+
     //reset IRQ flag by writing 1 to bit in register
     writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE);
     // reset register pointer -> not sure if needed
@@ -321,19 +313,37 @@ void NashLORA::receivePacket(uint8_t* buf, uint8_t* len) // this function only r
     receive();
 }
 
-int NashLORA::getPacketRSSI()
+int NashLORA::getPacketSNR()
 {
-    int rssi;
+    int8_t packetSNR = readRegister(REG_PACKET_SNR);
+
+    int snr = packetSNR*0.25;
+
+    return snr;
+}
+
+int NashLORA::getPacketRSSI()
+{  
+    int8_t packetSNR = readRegister(REG_PACKET_SNR);
+    int packetRSSI = readRegister(REG_PACKET_RSSI);
+
+    // if below noise floor
+    if (packetSNR < 0)
+    {
+        packetRSSI = packetRSSI + packetSNR * 0.25;
+    }
+
     if (freq >= 525000000)
     {
-        rssi = -157 + readRegister(REG_PACKET_RSSI);
+        packetRSSI = -157 + packetRSSI;
     }
     else
     {
-        rssi = -164 + readRegister(REG_PACKET_RSSI);
+        packetRSSI = -164 + packetRSSI;
     }
 
-    return rssi;
+    // return rssi as int -> these are whole number values, it may be better to use a float
+    return packetRSSI;
 }
 
 bool NashLORA::signalDetected()
@@ -544,4 +554,38 @@ void NashLORA::clearReceiveFlags()
 {
     writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE);
     writeRegister(REG_IRQ_FLAGS, IRQ_CRC_ERR);
+}
+
+int64_t NashLORA::getFreqErr()
+{
+    uint8_t lsb = readRegister(0x2A);
+    uint8_t mid = readRegister(0x29);
+    uint8_t msb = readRegister(0x28) & 0b111;
+
+    int32_t freqErrorEst = (msb << 16) + (mid << 8) + lsb;
+
+    if (readRegister(0x28) & 0b1000)
+    {
+        freqErrorEst -= 524288;
+    }
+
+    int64_t Ferr = freqErrorEst * pow(2, 24)/(32000000) * BW/500;
+
+    //int64_t Ferr = freqErrorEst * 2.097;
+    return Ferr;
+}
+
+void NashLORA::correctFreqOffset()
+{
+    standby();
+    int64_t freqErr = getFreqErr();
+    setFreq(freq - freqErr);
+
+    float freqErrPPM = freqErr / (freq * 1E6);
+
+    int8_t PPMOffset = 0.95 * freqErrPPM;
+
+    writeRegister(0x27, PPMOffset);
+
+    receive();
 }
